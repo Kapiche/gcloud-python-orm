@@ -34,6 +34,24 @@ class TestModel(unittest2.TestCase):
         m = model.Model(parent=p)
         self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'Model').path)
 
+        # id from field with default
+        class TestModel(model.Model):
+            id = model.TextProperty(default="abc")
+        m = TestModel()
+        self.assertEqual(m.key.id_or_name, "abc")
+
+        # id from field with callable default
+        class TestModel(model.Model):
+            id = model.TextProperty(default=lambda: "abc")
+        m = TestModel()
+        self.assertEqual(m.key.id_or_name, "abc")
+
+        # id from int field with callable default
+        class TestModel(model.Model):
+            id = model.IntegerProperty(default=lambda: 111)
+        m = TestModel()
+        self.assertEqual(m.key.id_or_name, 111)
+
     def testBooleanProperty(self):
         class TestModel(model.Model):
             test_bool = model.BooleanProperty()
@@ -101,6 +119,12 @@ class TestModel(unittest2.TestCase):
 
         class TestModel(model.Model):
             test_text = model.TextProperty(default="")
+
+        m = TestModel()
+        self.assertEqual(m['test_text'], "")
+
+        class TestModel(model.Model):
+            test_text = model.TextProperty(default=lambda: "")
 
         m = TestModel()
         self.assertEqual(m['test_text'], "")

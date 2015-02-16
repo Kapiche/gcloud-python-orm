@@ -27,7 +27,10 @@ class Property(object):
             return [self.from_base_type(k) for k in instance[self._name]]
 
         if self._name not in instance:
-            self.__set__(instance, self._default)
+            if callable(self._default):
+                self.__set__(instance, self._default())
+            else:
+                self.__set__(instance, self._default)
 
         return self.from_base_type(instance[self._name])
 
@@ -282,6 +285,11 @@ class Model(entity.Entity):
         :param kwargs: The value of the properties for this model. Unrecognised properties are ignored.
         """
         # Determine our key.
+        if not id and 'id' in self._properties and self._properties['id']._default:
+            prop = self._properties['id']
+            if isinstance(prop, TextProperty) or isinstance(prop, IntegerProperty):
+                default = prop._default if not callable(prop._default) else prop._default()
+                id = prop.to_base_type(prop.validate(default))
         if id:
             if isinstance(parent, key.Key):
                 self._key = key.Key(self.__class__.__name__, id, parent=parent)
@@ -365,10 +373,6 @@ class Model(entity.Entity):
         """
         entities = api.get([key.Key(cls.__name__, i) for i in ids])
         return [cls.from_entity(e) for e in entities if e]
-
-    @property
-    def id(self):
-        return self._key.id
 
     def save(self):
         return api.put([self])
