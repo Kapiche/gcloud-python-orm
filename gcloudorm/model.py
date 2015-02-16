@@ -1,17 +1,17 @@
-from gcloud import datastore
-from gcloud.datastore import entity, key
 import cPickle as pickle
-try:
-  import json
-except ImportError:
-  import simplejson as json
-
 import datetime
+import json
+import zlib
+
+from gcloud.datastore import api, entity, key
 
 
 class Property(object):
-    def __init__(self, name=None, indexed=True, repeated=False, required=False, default=None, choices=None, validator=None):
-        self._name = name
+    """
+    A property of a model.
+    """
+    def __init__(self, indexed=True, repeated=False, required=False, default=None, choices=None, validator=None):
+        self._name = None
         self._indexed = indexed
         self._repeated = repeated
         self._required = required
@@ -21,12 +21,12 @@ class Property(object):
 
     def __get__(self, instance, owner):
         if self._repeated:
-            if not self._name in instance:
+            if self._name not in instance:
                 self.__set__(instance, self._default or [])
 
             return [self.from_base_type(k) for k in instance[self._name]]
 
-        if not self._name in instance:
+        if self._name not in instance:
             self.__set__(instance, self._default)
 
         return self.from_base_type(instance[self._name])
@@ -43,23 +43,32 @@ class Property(object):
     def __delete__(self, instance):
         instance.pop(self._name, None)
 
-    def _fix_up(self, cls, name):
-        if self._name is None:
-            self._name = name
+    @property
+    def name(self):
+        return self.name
+
+    @property
+    def indexed(self):
+        return self._indexed
 
     def validate(self, value):
         assert self._choices is None or value in self._choices
-        assert not (self._required and not value is None)
-        if value is None: return
+        assert not (self._required and value is not None)
+        if value is None:
+            return
 
-        v = self._validate(value)
-        if not self._validator is None:
+        if self._validator is not None:
             return self._validator(self, value)
 
         return value
 
-    def _validate(self, value):
-        return value
+    def from_base_type(self, value):
+        if value is None:
+            return value
+        return self._from_base_type(value)
+
+    def _fix_up(self, cls, name):
+        self._name = name
 
     def to_base_type(self, value):
         if value is None:
@@ -69,46 +78,36 @@ class Property(object):
     def _to_base_type(self, value):
         return value
 
-    def from_base_type(self, value):
-        if value is None:
-            return value
-        return self._from_base_type(value)
-
     def _from_base_type(self, value):
         return value
 
-    def _prepare_for_put(self, entity):
-        # TODO: check if _required
-        pass
-
-    def from_db_value(self, value):
-        return self._from_db_value(value)
-
-    def _from_db_value(self, value):
-        return value
 
 class BooleanProperty(Property):
     def _validate(self, value):
         assert isinstance(value, bool)
         return value
 
+
 class IntegerProperty(Property):
     def _validate(self, value):
         assert isinstance(value, (int, long))
         return int(value)
+
 
 class FloatProperty(Property):
     def _validate(self, value):
         assert isinstance(value, (int, long, float))
         return float(value)
 
+
 class BlobProperty(Property):
-    def __init__(self, name=None, compressed=False, **kwargs):
+    def __init__(self, compressed=False, **kwargs):
         kwargs.pop('indexed', None)
-        super(BlobProperty, self).__init__(name=name, indexed=False, **kwargs)
+        super(BlobProperty, self).__init__(indexed=False, **kwargs)
 
         self._compressed = compressed
-        assert not (compressed and self._indexed), "BlobProperty %s cannot be compressed and indexed at the same time." % self._name
+        assert not (compressed and self._indexed), \
+            "BlobProperty %s cannot be compressed and indexed at the same time." % self._name
 
     def _validate(self, value):
         assert isinstance(value, str), value
@@ -126,9 +125,10 @@ class BlobProperty(Property):
 
         return value
 
+
 class TextProperty(BlobProperty):
-    def __init__(self, name=None, indexed=False, **kwargs):
-        super(TextProperty, self).__init__(name=name, indexed=indexed, **kwargs)
+    def __init__(self, indexed=False, **kwargs):
+        super(TextProperty, self).__init__(indexed=indexed, **kwargs)
 
     def _validate(self, value):
         if isinstance(value, str):
@@ -155,9 +155,10 @@ class TextProperty(BlobProperty):
 
         return value
 
+
 class StringProperty(TextProperty):
-    def __init__(self, name=None, indexed=True, **kwargs):
-        super(StringProperty, self).__init__(name=name, indexed=indexed, **kwargs)
+    def __init__(self, indexed=True, **kwargs):
+        super(StringProperty, self).__init__(indexed=indexed, **kwargs)
 
 
 class PickleProperty(BlobProperty):
@@ -169,6 +170,7 @@ class PickleProperty(BlobProperty):
 
     def _validate(self, value):
         return value
+
 
 class JsonProperty(BlobProperty):
     def __init__(self, name=None, schema=None, **kwargs):
@@ -222,6 +224,7 @@ class DateProperty(DateTimeProperty):
     def _now(self):
         return datetime.datetime.utcnow().date()
 
+
 class TimeProperty(DateTimeProperty):
     def _validate(self, value):
         assert isinstance(value, datetime.time)
@@ -245,47 +248,71 @@ class MetaModel(type):
 
 
 class Model(entity.Entity):
+    """
+    A Model is just a :class:`gcloud.datastore.entity.Entity`. The kind of the Entity is the name of the class that
+    extends Model (``self.__class__.__name__``).
+
+    A Model has properties as declared on the class itself. For example:
+
+        from gcloudorm import model
+
+        class Person(model.Model):
+            name = model.TextProperty(indexed=False)
+            dob = model.DateProperty()
+
+    To save/update an entity, call :func:`.put` on it. To fetch an entity, call :func:`.get`.
+
+    """
     __metaclass__ = MetaModel
 
     # name, prop dict
     _properties = None
     _kind_map = {}
 
-    dataset = None
-
     _model_exclude_from_indexes = None
 
     def __init__(self, id=None, parent=None, **kwargs):
-        super(Model, self).__init__(self.dataset, exclude_from_indexes=self._model_exclude_from_indexes)
+        """
+        Create a new instance of the model.
 
-        if isinstance(parent, key.Key):
-            flat = []
-            for k in parent.path():
-                flat.extend([k["kind"], k.get("id") or k.get("name")])
+        Underneath, this creates the gcloud Entity and Key for that entity.
 
-            flat.extend([self.__class__.__name__, id])
-            self._key = key.Key.from_path(*flat)
+        :param id: Used in the id part of the Key for this underlying gcloud Entity.
+        :param parent: A :class:`gcloud.datastore.key.Key` to use as a parent.
+        :param kwargs: The value of the properties for this model. Unrecognised properties are ignored.
+        """
+        # Determine our key.
+        if id:
+            if isinstance(parent, key.Key):
+                self._key = key.Key(self.__class__.__name__, id, parent=parent)
+            else:
+                self._key = key.Key(self.__class__.__name__, id)
         else:
-            self._key = key.Key.from_path(self.__class__.__name__, id)
+            if isinstance(parent, key.Key):
+                self._key = key.Key(self.__class__.__name__, parent=parent)
+            else:
+                self._key = key.Key(self.__class__.__name__)
+        super(Model, self).__init__(self._key, exclude_from_indexes=self._model_exclude_from_indexes)
 
+        # Set our properties
         for attr in self._properties:
             setattr(self, attr, getattr(self, attr))
 
         for name in kwargs:
-            setattr(self, name, kwargs[name])
+            if name in self._properties:  # Don't store random properties
+                setattr(self, name, kwargs[name])
 
     @classmethod
     def _fix_up_properties(cls):
         cls._properties = {}
         cls._model_exclude_from_indexes = set()
 
-        for name in cls.__dict__:
-            attr = cls.__dict__[name]
+        for name, attr in cls.__dict__.items():
             if isinstance(attr, Property):
                 attr._fix_up(cls, name)
-                cls._properties[attr._name] = attr
-                if attr._indexed == False:
-                    cls._model_exclude_from_indexes.add(attr._name)
+                cls._properties[name] = attr
+                if not attr.indexed:
+                    cls._model_exclude_from_indexes.add(name)
 
         cls._kind_map[cls.__name__] = cls
 
@@ -297,7 +324,7 @@ class Model(entity.Entity):
         if self._key:
             return "<%s%s %s>" % (
                 self.__class__.__name__,
-                self._key.path(),
+                self._key.path,
                 super(Model, self).__repr__()
             )
         else:
@@ -307,54 +334,41 @@ class Model(entity.Entity):
             )
 
     @classmethod
-    def from_entity(cls, entity):
+    def from_entity(cls, e):
         obj = cls()
-        obj._key = entity.key()
+        obj._key = e.key
 
-        for name in cls._properties:
-            value = entity.get(name)
-            # string property from protobuf is str, but gcloud-python need unicode
-            obj[name] = cls._properties[name].from_db_value(value)
+        for name, prop in cls._properties.items():
+            obj[name] = prop.from_db_value(e.get(name))
 
         return obj
 
     @classmethod
     def get_by_id(cls, id):
-        entity = cls.dataset.get_entity(key.Key.from_path(cls.__name__, id))
-        if entity:
+        """
+        Get the entity identified by id.
+
+        :param id: The id of the entity to fetch
+        :return: The model instance.
+        """
+        e = api.get([key.Key(cls.__name__, id)])
+        if e:
             return cls.from_entity(entity)
 
     @classmethod
-    def get_multi(cls, ids):
-        entities = cls.dataset.get_entities([key.Key.from_path(cls.__name__, id) for id in ids])
-        results = []
+    def filter(cls, ids):
+        """
+        Get the entities identified by ids.
 
-        for entity in entities:
-            if entity is None:
-                results.append(None)
-            else:
-                results.append(cls.from_entity(entity))
+        :param ids: The ids to fetch.
+        :return:
+        """
+        entities = api.get([key.Key(cls.__name__, i) for i in ids])
+        return [cls.from_entity(e) for e in entities if e]
 
-        return results
+    @property
+    def id(self):
+        return self._key.id
 
-    def put(self):
-        for name, prop in self._properties.items():
-            prop._prepare_for_put(self)
-
-        return self.save()
-
-
-def get_multi(keys):
-    entities = Model.dataset.get_entities(keys)
-
-    results = []
-    for entity in entities:
-        if entity is None:
-            results.append(None)
-
-        kind = entity.key().kind()
-
-        model = Model._lookup_model(kind)
-        results.append(model.from_entity(entity))
-
-    return results
+    def save(self):
+        return api.put([self])

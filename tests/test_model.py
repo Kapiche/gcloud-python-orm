@@ -1,30 +1,38 @@
+import os
 import unittest2
-from gcloudorm import key, model
+
+from gcloud.datastore import helpers, key, set_defaults
+
+from gcloudorm import model
+
+
+set_defaults()
+
 
 class TestModel(unittest2.TestCase):
     def testModel(self):
         # key name
         m = model.Model(id='bar')
-        self.assertEqual(m.key().name(), 'bar')
-        self.assertEqual(m.key().kind(), 'Model')
+        self.assertEqual(m.key.name, 'bar')
+        self.assertEqual(m.key.kind, model.Model.__name__)
 
         p = key.Key('ParentModel', 'foo')
 
         # key name + parent
         m = model.Model(id='bar', parent=p)
-        self.assertEqual(m.key().path(), key.Key(flat=('ParentModel', 'foo', 'Model', 'bar')).path())
+        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'Model', 'bar').path)
 
         # key id
         m = model.Model(id=42)
-        self.assertEqual(m.key().id(), 42)
+        self.assertEqual(m.key.id, 42)
 
         # key id + parent
         m = model.Model(id=42, parent=p)
-        self.assertEqual(m.key().path(), key.Key(flat=('ParentModel', 'foo', 'Model', 42)).path())
+        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'Model', 42).path)
 
         # parent
         m = model.Model(parent=p)
-        self.assertEqual(m.key().path(), key.Key(flat=('ParentModel', 'foo', 'Model', None)).path())
+        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'Model').path)
 
     def testBooleanProperty(self):
         class TestModel(model.Model):
@@ -91,13 +99,11 @@ class TestModel(unittest2.TestCase):
         m = TestModel()
         self.assertEqual(m.test_text, None)
 
-
         class TestModel(model.Model):
             test_text = model.TextProperty(default="")
 
         m = TestModel()
         self.assertEqual(m['test_text'], "")
-
 
     def testStringProperty(self):
         class TestModel(model.Model):
@@ -108,7 +114,6 @@ class TestModel(unittest2.TestCase):
         m.test_str = '123'
 
         self.assertEqual(m['test_str'], '123')
-
 
     def testPickleProperty(self):
         class TestModel(model.Model):
@@ -134,7 +139,6 @@ class TestModel(unittest2.TestCase):
         m.test_pickle = {'456': '789'}
         self.assertEqual(m.test_pickle, {'456': '789'})
 
-
     def testDataTimeProperty(self):
         import datetime
 
@@ -147,7 +151,6 @@ class TestModel(unittest2.TestCase):
         utcnow = datetime.datetime.utcnow()
         m.test_datetime = utcnow
         self.assertEqual(m.test_datetime, utcnow)
-
 
     def testDateProperty(self):
         import datetime
@@ -176,23 +179,23 @@ class TestModel(unittest2.TestCase):
 
         self.assertEqual(m.test_time, t)
 
-    def testInsert(self):
-        connection = _Connection()
-        transaction = connection._transaction = _Transaction()
-        dataset = _Dataset(connection)
-        key = _Key()
-
-        model.Model.dataset = dataset
-
-        class TestModel(model.Model):
-            test_value = model.StringProperty()
-
-        entity = TestModel(id=1)
-        entity.key(key)
-        entity.test_value = '123'
-        entity.put()
-
-        self.assertEqual(entity['test_value'], '123')
+    # def testInsert(self):
+    #     connection = _Connection()
+    #     transaction = connection._transaction = _Transaction()
+    #     dataset = _Dataset(connection)
+    #     key = _Key()
+    #
+    #     model.Model.dataset = dataset
+    #
+    #     class TestModel(model.Model):
+    #         test_value = model.StringProperty()
+    #
+    #     entity = TestModel(id=1)
+    #     entity.key = key
+    #     entity.test_value = '123'
+    #     entity.save()
+    #
+    #     self.assertEqual(entity['test_value'], '123')
         # self.assertEqual(connection._saved,
         #                  (_DATASET_ID, 'KEY', {'test_value': '123'}, ()))
         # self.assertEqual(key._path, None)
@@ -202,7 +205,7 @@ _MARKER = object()
 _DATASET_ID = 'DATASET'
 _KIND = 'KIND'
 _ID = 1234
-
+helpers._prepare_key_for_request = lambda x: x
 
 
 class _Key(object):
@@ -221,6 +224,10 @@ class _Key(object):
         if path is self._MARKER:
             return self._path
         self._path = path
+
+    @property
+    def dataset_id(self):
+        return _DATASET_ID
 
 
 class _Dataset(dict):
