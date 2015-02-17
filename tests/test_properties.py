@@ -97,16 +97,6 @@ class TestProperties(unittest2.TestCase):
         m = TestModel()
         self.assertEqual(m['test_text'], "")
 
-    def testStringProperty(self):
-        class TestModel(model.Model):
-            test_str = properties.StringProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_str, None)
-        m.test_str = '123'
-
-        self.assertEqual(m['test_str'], '123')
-
     def testPickleProperty(self):
         class TestModel(model.Model):
             test_pickle = properties.PickleProperty()

@@ -1,3 +1,7 @@
+"""
+:class:`Model`s are the building blocks of the ORM layer, providing object-orientated interaction with datastore
+entities.
+"""
 from __future__ import absolute_import
 
 from gcloud.datastore import api, entity, key
@@ -17,10 +21,9 @@ class MetaModel(type):
 
 class Model(entity.Entity):
     """
-    A Model is just a :class:`gcloud.datastore.entity.Entity`. The kind of the Entity is the name of the class that
-    extends Model (``self.__class__.__name__``).
-
-    A Model has properties as declared on the class itself. For example:
+    A Model is just an extension of :class:`gcloud.datastore.entity.Entity`. ``cls.__name__``. is used as the Entity
+    kind. A model has 1 or more properties which are persisted to the datastore. See :mod:`gclourdorm.properties`
+    for a full list of available properties. For example:
 
         from gcloudorm import model
 
@@ -28,7 +31,24 @@ class Model(entity.Entity):
             name = model.TextProperty(indexed=False)
             dob = model.DateProperty()
 
-    To save/update an entity, call :func:`.put` on it. To fetch an entity, call :func:`.get`.
+    The id/name of the underlying entity will be automatically inferred from the Model instance using the following
+    strategy:
+
+    * Any property with the ``key_id`` attribute set to True will be used as the key. Otherwise;
+    * If there is an ``id`` property on the Model instance, then it will be used as the key. Otherwise;
+    * An ``id`` property of type :class:`gcloudorm.properties.IdProperty` will be injected onto the instance.
+
+    If the property being used as the id isn't one of :class:`gcloudorm.properties.IdProperty`,
+    :class:`gcloudorm.properties.TextProperty` or :class:`gcloudorm.properties.IntegerProperty`, then a TypeError will
+    be raised.
+
+    Access to the model's key is via :attr:`.key`, and the id can be fetched using ``model.key.id_or_name``.
+
+    To save/update an model, call :func:`.save` on it. To fetch a model by id, call :func:`.get_by_id`. To fetch
+    multiple model instances at once, use :func:`.filter`. To delete a model instance from datastore, call :
+    func:`.delete`.
+
+    This class shouldn't be used directly. Instead, it is intended to be extended by concrete model implementations.
     """
     __metaclass__ = MetaModel
 
@@ -43,11 +63,12 @@ class Model(entity.Entity):
         """
         Create a new instance of the model.
 
-        Underneath, this creates the gcloud Entity and Key for that entity.
+        Underneath, this creates the :class:`gcloud.datastore.Entity` and a :class:`gcloud.datastore.Key` for that
+        entity.
 
-        :param id: Used in the id part of the Key for this underlying gcloud Entity.
-        :param parent: A :class:`gcloud.datastore.key.Key` to use as a parent.
+        :param Key parent: A :class:`gcloud.datastore.key.Key` to use as a parent.
         :param kwargs: The value of the properties for this model. Unrecognised properties are ignored.
+        :raises TypeError: if the id proper is the wrong type.
         """
         # Determine our key.
         if not self._id_prop:
@@ -77,12 +98,12 @@ class Model(entity.Entity):
 
         # Set our properties
         for attr in self._properties:
-            if attr == self._id_prop:
-                setattr(self, attr, id_value)  # Functionality of getattr has already been called for key_id prop
             setattr(self, attr, getattr(self, attr))
 
-        for name in kwargs:
-            if name in self._properties:  # Don't store random properties
+        for name in self._properties:  # Don't store random properties
+            if name == self._id_prop:  # We already have the value of the id
+                setattr(self, name, id_value)
+            elif name in kwargs:
                 setattr(self, name, kwargs[name])
 
     @classmethod
@@ -125,11 +146,21 @@ class Model(entity.Entity):
 
     @classmethod
     def from_entity(cls, e):
-        obj = cls(id=e.key.id_or_name)
+        """
+        Create an instance of Model ``cls`` from entity ``e``.
+
+        :param Model cls: the class object to create and instance of.
+        :param Entity e: the entity to use as a base.
+        :return: a new instance of cls using e.
+        """
+        kwargs = {name: e.get(name) for name, prop in cls._properties.items() if prop.is_id}  # we need the id value
+        obj = cls(**kwargs)
         obj._key = e.key
 
-        for name, prop in cls._properties.items():
-            obj[name] = prop.from_db_value(e.get(name))
+        for name, prop in cls._properties.items():  # set values
+            if not prop.is_id:
+                obj[name] = e.get(name)
+
 
         return obj
 
@@ -151,14 +182,16 @@ class Model(entity.Entity):
         """
         Get the entities identified by ids.
 
-        :param ids: The ids to fetch.
+        :param list ids: The ids to fetch.
         :return: a list of Model instances
         """
         entities = api.get([key.Key(cls.__name__, i) for i in ids])
         return [cls.from_entity(e) for e in entities if e]
 
     def save(self):
+        """Save this model instance to the datastore."""
         return api.put([self])
 
     def delete(self):
+        """Remove this model instance from the datastore."""
         return api.delete([self._key])
