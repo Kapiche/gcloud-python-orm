@@ -1,228 +1,79 @@
-import os
+import six
 import unittest2
 
-from gcloud.datastore import helpers, key, set_defaults
+from gcloud.datastore import helpers, key, set_default_dataset_id, set_default_connection
 
-from gcloudorm import model
-
-
-set_defaults()
+from gcloudorm import model, properties
 
 
 class TestModel(unittest2.TestCase):
-    def testModel(self):
-        # key name
-        m = model.Model(id='bar')
-        self.assertEqual(m.key.name, 'bar')
-        self.assertEqual(m.key.kind, model.Model.__name__)
+    def setUp(self):
+        set_default_dataset_id(_DATASET_ID)
 
+    def testModel(self):
         p = key.Key('ParentModel', 'foo')
 
-        # key name + parent
-        m = model.Model(id='bar', parent=p)
-        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'Model', 'bar').path)
-
-        # key id
-        m = model.Model(id=42)
-        self.assertEqual(m.key.id, 42)
-
-        # key id + parent
-        m = model.Model(id=42, parent=p)
-        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'Model', 42).path)
-
-        # parent
+        # key auto id (name)
+        m = model.Model()
+        self.assertEqual(m.key.id_or_name, m.id)
+        self.assertEqual(m.key.kind, model.Model.__name__)
+        # + parent
         m = model.Model(parent=p)
-        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'Model').path)
+        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'Model', m.id).path)
 
-        # id from field with default
+        # name from field with default
         class TestModel(model.Model):
-            id = model.TextProperty(default="abc")
+            id = properties.TextProperty(default="abc", key_id=True)
         m = TestModel()
         self.assertEqual(m.key.id_or_name, "abc")
+        self.assertEqual(m.id, "abc")
+        # pass name
+        m = TestModel(id='cba')
+        self.assertEqual(m.key.id_or_name, "cba")
+        self.assertEqual(m.id, "cba")
+        # + parent
+        m = TestModel(parent=p)
+        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'TestModel', m.id).path)
+        # pass + parent
+        m = TestModel(id='cba', parent=p)
+        self.assertEqual(m.key.path, key.Key('ParentModel', 'foo', 'TestModel', 'cba').path)
 
-        # id from field with callable default
+        # name from field with callable default
         class TestModel(model.Model):
-            id = model.TextProperty(default=lambda: "abc")
+            id = model.TextProperty(default=lambda: "abc", key_id=True)
         m = TestModel()
         self.assertEqual(m.key.id_or_name, "abc")
+        self.assertEqual(m.id, "abc")
 
-        # id from int field with callable default
+        # name from int field with callable default
         class TestModel(model.Model):
-            id = model.IntegerProperty(default=lambda: 111)
+            id = model.IntegerProperty(default=lambda: 111, key_id=True)
         m = TestModel()
         self.assertEqual(m.key.id_or_name, 111)
+        self.assertEqual(m.id, 111)
 
-    def testBooleanProperty(self):
+        # name from IdProeprty
         class TestModel(model.Model):
-            test_bool = model.BooleanProperty()
+            the_id = model.IdProperty(key_id=True)
 
-        m = TestModel()
-        self.assertEqual(m.test_bool, None)
-        self.assertEqual(m['test_bool'], None)
-
-        m = TestModel(test_bool=False)
-        self.assertEqual(m.test_bool, False)
-        self.assertEqual(m['test_bool'], False)
-
-        m.test_bool = True
-        self.assertEqual(m.test_bool, True)
-        self.assertEqual(m['test_bool'], True)
+    def testInsert(self):
+        connection = _Connection()
+        transaction = connection._transaction = _Transaction()
+        dataset = _Dataset(connection)
+        key = _Key()
+        set_default_connection(connection)
 
         class TestModel(model.Model):
-            test_bool = model.BooleanProperty(default=True)
+            test_value = properties.StringProperty()
 
-        m = TestModel()
-        self.assertEqual(m.test_bool, True)
-        self.assertEqual(m['test_bool'], True)
+        entity = TestModel()
+        entity.key = key
+        entity.test_value = '123'
+        entity.save()
 
-    def testIntegerProperty(self):
-        class TestModel(model.Model):
-            test_int = model.IntegerProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_int, None)
-        self.assertEqual(m['test_int'], None)
-
-        class TestModel(model.Model):
-            test_int = model.IntegerProperty(default=3)
-
-        m = TestModel()
-        self.assertEqual(m['test_int'], 3)
-
-        m.test_int = 4
-        self.assertEqual(m.test_int, 4)
-        self.assertEqual(m['test_int'], 4)
-
-    def testFloatproperty(self):
-        class TestModel(model.Model):
-            test_float = model.FloatProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_float, None)
-        self.assertEqual(m['test_float'], None)
-
-        class TestModel(model.Model):
-            test_float = model.FloatProperty(default=0.1)
-
-        m = TestModel()
-        self.assertEqual(m['test_float'], 0.1)
-
-        m.test_float = 0.2
-        self.assertEqual(m['test_float'], 0.2)
-
-    def testTextProperty(self):
-        class TestModel(model.Model):
-            test_text = model.TextProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_text, None)
-
-        class TestModel(model.Model):
-            test_text = model.TextProperty(default="")
-
-        m = TestModel()
-        self.assertEqual(m['test_text'], "")
-
-        class TestModel(model.Model):
-            test_text = model.TextProperty(default=lambda: "")
-
-        m = TestModel()
-        self.assertEqual(m['test_text'], "")
-
-    def testStringProperty(self):
-        class TestModel(model.Model):
-            test_str = model.StringProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_str, None)
-        m.test_str = '123'
-
-        self.assertEqual(m['test_str'], '123')
-
-    def testPickleProperty(self):
-        class TestModel(model.Model):
-            test_pickle = model.PickleProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_pickle, None)
-        m = TestModel(test_pickle={"123": "456"})
-        self.assertEqual(m.test_pickle, {"123": "456"})
-
-        m.test_pickle = {'456': '789'}
-        self.assertEqual(m.test_pickle, {'456': '789'})
-
-    def testJsonProperty(self):
-        class TestModel(model.Model):
-            test_pickle = model.JsonProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_pickle, None)
-        m = TestModel(test_pickle={"123": "456"})
-        self.assertEqual(m.test_pickle, {"123": "456"})
-
-        m.test_pickle = {'456': '789'}
-        self.assertEqual(m.test_pickle, {'456': '789'})
-
-    def testDataTimeProperty(self):
-        import datetime
-
-        class TestModel(model.Model):
-            test_datetime = model.DateTimeProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_datetime, None)
-
-        utcnow = datetime.datetime.utcnow()
-        m.test_datetime = utcnow
-        self.assertEqual(m.test_datetime, utcnow)
-
-    def testDateProperty(self):
-        import datetime
-
-        class TestModel(model.Model):
-            test_date = model.DateProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_date, None)
-
-        today = datetime.date.today()
-        m.test_date = today
-        self.assertEqual(m.test_date, today)
-
-    def testTimeProperty(self):
-        import datetime
-
-        class TestModel(model.Model):
-            test_time = model.TimeProperty()
-
-        m = TestModel()
-        self.assertEqual(m.test_time, None)
-
-        t = datetime.time()
-        m.test_time = t
-
-        self.assertEqual(m.test_time, t)
-
-    # def testInsert(self):
-    #     connection = _Connection()
-    #     transaction = connection._transaction = _Transaction()
-    #     dataset = _Dataset(connection)
-    #     key = _Key()
-    #
-    #     model.Model.dataset = dataset
-    #
-    #     class TestModel(model.Model):
-    #         test_value = model.StringProperty()
-    #
-    #     entity = TestModel(id=1)
-    #     entity.key = key
-    #     entity.test_value = '123'
-    #     entity.save()
-    #
-    #     self.assertEqual(entity['test_value'], '123')
-        # self.assertEqual(connection._saved,
-        #                  (_DATASET_ID, 'KEY', {'test_value': '123'}, ()))
-        # self.assertEqual(key._path, None)
+        self.assertEqual(entity['test_value'], '123')
+        self.assertEqual(connection._saved, (_DATASET_ID, 'KEY', {'test_value': '123'}, ()))
+        self.assertEqual(key._path, None)
 
 
 _MARKER = object()
@@ -255,7 +106,6 @@ class _Key(object):
 
 
 class _Dataset(dict):
-
     def __init__(self, connection=None):
         super(_Dataset, self).__init__()
         self._connection = connection

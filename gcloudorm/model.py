@@ -1,247 +1,12 @@
-import cPickle as pickle
-import datetime
-import json
-import zlib
+from __future__ import absolute_import
 
 from gcloud.datastore import api, entity, key
 
+from .properties import IdProperty, IntegerProperty, Property, TextProperty
 
-class Property(object):
-    """
-    A property of a model.
-    """
-    def __init__(self, indexed=True, repeated=False, required=False, default=None, choices=None, validator=None):
-        self._name = None
-        self._indexed = indexed
-        self._repeated = repeated
-        self._required = required
-        self._default = default
-        self._choices = choices
-        self._validator = validator
 
-    def __get__(self, instance, owner):
-        if self._repeated:
-            if self._name not in instance:
-                self.__set__(instance, self._default or [])
-
-            return [self.from_base_type(k) for k in instance[self._name]]
-
-        if self._name not in instance:
-            if callable(self._default):
-                self.__set__(instance, self._default())
-            else:
-                self.__set__(instance, self._default)
-
-        return self.from_base_type(instance[self._name])
-
-    def __set__(self, instance, value):
-        if self._repeated:
-            assert isinstance(value, (tuple, list)), "Repeated property only accept list or tuple"
-            value = [self.validate(k) for k in value]
-            instance[self._name] = [self.to_base_type(k) for k in value]
-        else:
-            value = self.validate(value)
-            instance[self._name] = self.to_base_type(value)
-
-    def __delete__(self, instance):
-        instance.pop(self._name, None)
-
-    @property
-    def name(self):
-        return self.name
-
-    @property
-    def indexed(self):
-        return self._indexed
-
-    def validate(self, value):
-        assert self._choices is None or value in self._choices
-        assert not (self._required and value is not None)
-        if value is None:
-            return
-
-        if self._validator is not None:
-            return self._validator(self, value)
-
-        return value
-
-    def from_base_type(self, value):
-        if value is None:
-            return value
-        return self._from_base_type(value)
-
-    def _fix_up(self, cls, name):
-        self._name = name
-
-    def to_base_type(self, value):
-        if value is None:
-            return value
-        return self._to_base_type(value)
-
-    def _to_base_type(self, value):
-        return value
-
-    def _from_base_type(self, value):
-        return value
-
-
-class BooleanProperty(Property):
-    def _validate(self, value):
-        assert isinstance(value, bool)
-        return value
-
-
-class IntegerProperty(Property):
-    def _validate(self, value):
-        assert isinstance(value, (int, long))
-        return int(value)
-
-
-class FloatProperty(Property):
-    def _validate(self, value):
-        assert isinstance(value, (int, long, float))
-        return float(value)
-
-
-class BlobProperty(Property):
-    def __init__(self, compressed=False, **kwargs):
-        kwargs.pop('indexed', None)
-        super(BlobProperty, self).__init__(indexed=False, **kwargs)
-
-        self._compressed = compressed
-        assert not (compressed and self._indexed), \
-            "BlobProperty %s cannot be compressed and indexed at the same time." % self._name
-
-    def _validate(self, value):
-        assert isinstance(value, str), value
-        return value
-
-    def _to_base_type(self, value):
-        if self._compressed:
-            return zlib.compress(value)
-
-        return value
-
-    def _from_base_type(self, value):
-        if self._compressed:
-            return zlib.decompress(value.z_val)
-
-        return value
-
-
-class TextProperty(BlobProperty):
-    def __init__(self, indexed=False, **kwargs):
-        super(TextProperty, self).__init__(indexed=indexed, **kwargs)
-
-    def _validate(self, value):
-        if isinstance(value, str):
-            value = value.decode('utf-8')
-
-        assert isinstance(value, unicode)
-        return value
-
-    def _to_base_type(self, value):
-        if isinstance(value, str):
-            return value.decode('utf-8')
-
-        return value
-
-    def _from_base_type(self, value):
-        if isinstance(value, str):
-            return unicode(value, 'utf-8')
-        elif isinstance(value, unicode):
-            return value
-
-    def _from_db_value(self, value):
-        if isinstance(value, str):
-            return value.decode('utf-8')
-
-        return value
-
-
-class StringProperty(TextProperty):
-    def __init__(self, indexed=True, **kwargs):
-        super(StringProperty, self).__init__(indexed=indexed, **kwargs)
-
-
-class PickleProperty(BlobProperty):
-    def _to_base_type(self, value):
-        return super(PickleProperty, self)._to_base_type(pickle.dumps(value, pickle.HIGHEST_PROTOCOL))
-
-    def _from_base_type(self, value):
-        return pickle.loads(super(PickleProperty, self)._from_base_type(value))
-
-    def _validate(self, value):
-        return value
-
-
-class JsonProperty(BlobProperty):
-    def __init__(self, name=None, schema=None, **kwargs):
-        super(JsonProperty, self).__init__(name, **kwargs)
-        self._schema = schema
-
-    def _to_base_type(self, value):
-        return super(JsonProperty, self)._to_base_type(json.dumps(value))
-
-    def _from_base_type(self, value):
-        return json.loads(super(JsonProperty, self)._from_base_type(value))
-
-    def _validate(self, value):
-        return value
-
-
-class DateTimeProperty(Property):
-    def __init__(self, name=None, auto_now_add=False, auto_now=False, **kwargs):
-        assert not ((auto_now_add or auto_now) and kwargs.get("repeated", False))
-        super(DateTimeProperty, self).__init__(name, **kwargs)
-        self._auto_now_add = auto_now_add
-        self._auto_now = auto_now
-
-    def _validate(self, value):
-        assert isinstance(value, datetime.datetime), value
-        return value
-
-    def _now(self):
-        return datetime.datetime.utcnow()
-
-    def _prepare_for_put(self, entity):
-        v = getattr(entity, self._name)
-        if v is None and self._auto_now_add:
-            setattr(entity, self._name, self._now())
-
-        if self._auto_now:
-            setattr(entity, self._name, self._now())
-
-
-class DateProperty(DateTimeProperty):
-    def _validate(self, value):
-        assert isinstance(value, datetime.date)
-        return value
-
-    def _to_base_type(self, value):
-        return datetime.datetime(value.year, value.month, value.day)
-
-    def _from_base_type(self, value):
-        return value.date()
-
-    def _now(self):
-        return datetime.datetime.utcnow().date()
-
-
-class TimeProperty(DateTimeProperty):
-    def _validate(self, value):
-        assert isinstance(value, datetime.time)
-        return value
-
-    def _to_base_type(self, value):
-        return datetime.datetime(
-            1970, 1, 1,
-            value.hour, value.minute, value.second,
-            value.microsecond
-        )
-
-    def _from_base_type(self, value):
-        return value.time()
+class ObjectDoesNotExist(Exception):
+    """Couldn't fetch an entity by id."""
 
 
 class MetaModel(type):
@@ -264,7 +29,6 @@ class Model(entity.Entity):
             dob = model.DateProperty()
 
     To save/update an entity, call :func:`.put` on it. To fetch an entity, call :func:`.get`.
-
     """
     __metaclass__ = MetaModel
 
@@ -273,8 +37,9 @@ class Model(entity.Entity):
     _kind_map = {}
 
     _model_exclude_from_indexes = None
+    _id_prop = None
 
-    def __init__(self, id=None, parent=None, **kwargs):
+    def __init__(self, parent=None, **kwargs):
         """
         Create a new instance of the model.
 
@@ -285,25 +50,35 @@ class Model(entity.Entity):
         :param kwargs: The value of the properties for this model. Unrecognised properties are ignored.
         """
         # Determine our key.
-        if not id and 'id' in self._properties and self._properties['id']._default:
-            prop = self._properties['id']
-            if isinstance(prop, TextProperty) or isinstance(prop, IntegerProperty):
-                default = prop._default if not callable(prop._default) else prop._default()
-                id = prop.to_base_type(prop.validate(default))
-        if id:
-            if isinstance(parent, key.Key):
-                self._key = key.Key(self.__class__.__name__, id, parent=parent)
+        if not self._id_prop:
+            if 'id' in self._properties:
+                if not isinstance(self._properties['id'], (IdProperty, IntegerProperty, TextProperty)):
+                    raise TypeError("You haven't specified a key_id property and have included an id property that "
+                                    "isn't a suitable type to be used as the key_id.")
+                self._properties['id']._is_id = True
             else:
-                self._key = key.Key(self.__class__.__name__, id)
+                self._properties['id'] = IdProperty(key_id=True)
+            self._id_prop = 'id'
+
+        # Figure out the id value
+        id_prop = self._properties[self._id_prop]
+        id_value = kwargs.get(self._id_prop, None) or \
+                   (id_prop._default() if callable(id_prop._default) else id_prop._default)
+        if not id_value:
+            raise ValueError('You need to specify a value for your key_id property or use a default value.')
+
+        # Create the key now we know our id
+        id_value = id_prop.to_base_type(id_prop.validate(id_value))  # Make sure id is in the right form for storage
+        if isinstance(parent, key.Key):
+            self._key = key.Key(self.__class__.__name__, id_value, parent=parent)
         else:
-            if isinstance(parent, key.Key):
-                self._key = key.Key(self.__class__.__name__, parent=parent)
-            else:
-                self._key = key.Key(self.__class__.__name__)
+            self._key = key.Key(self.__class__.__name__, id_value)
         super(Model, self).__init__(self._key, exclude_from_indexes=self._model_exclude_from_indexes)
 
         # Set our properties
         for attr in self._properties:
+            if attr == self._id_prop:
+                setattr(self, attr, id_value)  # Functionality of getattr has already been called for key_id prop
             setattr(self, attr, getattr(self, attr))
 
         for name in kwargs:
@@ -321,6 +96,13 @@ class Model(entity.Entity):
                 cls._properties[name] = attr
                 if not attr.indexed:
                     cls._model_exclude_from_indexes.add(name)
+                if attr.is_id:
+                    if cls._id_prop:
+                        raise ValueError('You have specified more then one key_id property.')
+                    if not isinstance(attr, (TextProperty, IntegerProperty, IdProperty,)):
+                        raise TypeError("The field you've marked as key_id isn't one of TextProperty, "
+                                        "IntegerProperty or IdProperty.")
+                    cls._id_prop = name
 
         cls._kind_map[cls.__name__] = cls
 
@@ -343,7 +125,7 @@ class Model(entity.Entity):
 
     @classmethod
     def from_entity(cls, e):
-        obj = cls()
+        obj = cls(id=e.key.id_or_name)
         obj._key = e.key
 
         for name, prop in cls._properties.items():
@@ -361,7 +143,8 @@ class Model(entity.Entity):
         """
         e = api.get([key.Key(cls.__name__, id)])
         if e:
-            return cls.from_entity(entity)
+            return cls.from_entity(e[0])
+        raise ObjectDoesNotExist
 
     @classmethod
     def filter(cls, ids):
@@ -369,10 +152,13 @@ class Model(entity.Entity):
         Get the entities identified by ids.
 
         :param ids: The ids to fetch.
-        :return:
+        :return: a list of Model instances
         """
         entities = api.get([key.Key(cls.__name__, i) for i in ids])
         return [cls.from_entity(e) for e in entities if e]
 
     def save(self):
         return api.put([self])
+
+    def delete(self):
+        return api.delete([self._key])
