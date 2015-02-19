@@ -70,21 +70,10 @@ class Model(entity.Entity):
         :param kwargs: The value of the properties for this model. Unrecognised properties are ignored.
         :raises TypeError: if the id proper is the wrong type.
         """
-        # Determine our key.
-        if not self._id_prop:
-            if 'id' in self._properties:
-                if not isinstance(self._properties['id'], (IdProperty, IntegerProperty, TextProperty)):
-                    raise TypeError("You haven't specified a key_id property and have included an id property that "
-                                    "isn't a suitable type to be used as the key_id.")
-                self._properties['id']._is_id = True
-            else:
-                self._properties['id'] = IdProperty(key_id=True)
-            self._id_prop = 'id'
-
         # Figure out the id value
         id_prop = self._properties[self._id_prop]
         id_value = kwargs.get(self._id_prop, None) or \
-                   (id_prop._default() if callable(id_prop._default) else id_prop._default)
+            (id_prop._default() if callable(id_prop._default) else id_prop._default)
         if not id_value:
             raise ValueError('You need to specify a value for your key_id property or use a default value.')
 
@@ -110,6 +99,7 @@ class Model(entity.Entity):
     def _fix_up_properties(cls):
         cls._properties = {}
         cls._model_exclude_from_indexes = set()
+        cls._id_prop = None
 
         for name, attr in cls.__dict__.items():
             if isinstance(attr, Property):
@@ -124,6 +114,19 @@ class Model(entity.Entity):
                         raise TypeError("The field you've marked as key_id isn't one of TextProperty, "
                                         "IntegerProperty or IdProperty.")
                     cls._id_prop = name
+        # Determine our key.
+        if not cls._id_prop:
+            if 'id' in cls._properties:
+                if not isinstance(cls._properties['id'], (IdProperty, IntegerProperty, TextProperty)):
+                    raise TypeError("You haven't specified a key_id property and have included an id property that "
+                                    "isn't a suitable type to be used as the key_id.")
+                cls._properties['id']._is_id = True
+            else:
+                attr = IdProperty(key_id=True)
+                attr._fix_up(cls, 'id')
+                cls.id = attr
+                cls._properties['id'] = attr
+            cls._id_prop = 'id'
 
         cls._kind_map[cls.__name__] = cls
 
@@ -160,7 +163,6 @@ class Model(entity.Entity):
         for name, prop in cls._properties.items():  # set values
             if not prop.is_id:
                 obj[name] = e.get(name)
-
 
         return obj
 

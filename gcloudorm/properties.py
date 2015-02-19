@@ -313,5 +313,3 @@ class TimeProperty(DateTimeProperty):
 
     def _from_base_type(self, value):
         return value.time()
-
-

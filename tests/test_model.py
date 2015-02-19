@@ -64,7 +64,7 @@ class TestModel(unittest2.TestCase):
         set_default_connection(connection)
 
         class TestModel(model.Model):
-            test_value = properties.StringProperty()
+            test_value = properties.TextProperty()
 
         entity = TestModel()
         entity.key = key
